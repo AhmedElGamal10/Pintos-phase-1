@@ -1,0 +1,363 @@
+			+--------------------+
+			|        CS 140      |
+			| PROJECT 1: THREADS |
+			|   DESIGN DOCUMENT  |
+			+--------------------+
+				   
+---- GROUP ----
+
+abdelmaseeh hanna abdelmaseeh.hanna@gmail.com	
+karim nasser <karim8h@live.com>
+ahmed EL Gamal gamoool.95@gmail.com
+
+---- PRELIMINARIES ----
+
+>> we have implemented Priority Queue data structure and the Fixed Point datatype, more details is 
+	 provided in the coming sections.
+>> The added code is organized, written according to C-style, and is clean.
+
+===========================================================================================================
+========================================== ALARM CLOCK ====================================================
+===========================================================================================================
+
+00000000000000000000000000000000000000000 DATA STRUCTURES 00000000000000000000000000000000000000000000000000
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+struct priority_queue            /* priority queue to get threads that are to be waked in the current tick. 
+{                                   and to get the thread with the highest priority to be scheduled */
+
+    int max_size;                /** maximum size the queue can hold. */
+    int count;                   /** # of elements in the queue. */
+    void** heap_arr;             /** heap array. */
+
+    /** compare function,
+        takes two arguments from the type that the queue holds, as void pointers.
+        return value is +ve : element1 > element2
+                        -ve : element1 < element2
+                        zero: element1 == element2
+    */
+    compare_func* compare_func;
+};
+
+typedef int compare_func (void* element1, void* element2);      /* it's defined to simplify the way 
+                                                                   the function pointer is declared */
+
+struct sleeping_thread        /* Encapsulates the thread with its waking time to be pushed in the priority queue, 
+{                                then threads are poped and waked according to their waking time and priorities */
+    struct thread *thread;    /* thread to wake */
+    int64_t waking_time;      /* thread's waking time in clock ticks*/
+};
+
+
+00000000000000000000000000000000000000000 ALGORITHMS 000000000000000000000000000000000000000000000000
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+When it's called with the number of ticks, an object of the struct is made encapsulating 
+the current thread that requested to sleep with the clock ticks provided, then this object 
+is pushed into the priority queue to be poped according to their waking time. Then this
+thread is blocked in its current position.
+
+-----------------------------------------------------------------------------------------------------
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+A Priority Queue is used instead of an ordinary linked list, which then would be sorted each time with
+total complexity of O(n^2). With the Priority Queue, the complexity is reduced to O(nlogn), which is
+assymptotically optimal. And of course, threads are poped untill we come to one that has waking time that
+is greater than the current time.
+
+000000000000000000000000000000000000000000 SYNCHRONIZATION 00000000000000000000000000000000000000000
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+A lock is acquired before pushing the thread to the priority queue and calling thread_block() on it.
+That is the critical section in timer_sleep().
+
+----------------------------------------------------------------------------------------------------
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+Timer Interrupts are disabled before pushing the thread to the queue, and reenabled after blocking the thread,
+to make sure that no thread is pushed to the queue with unblocked status.
+
+00000000000000000000000000000000000000000000 RATIONALE 000000000000000000000000000000000000000000000
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+The chosen design is simple and short, it's also characterised by low time comlexity, which is a very 
+important point to consider inorder to minimize the time taken in the timer interrupt handler.
+
+=======================================================================================================
+========================================= PRIORITY SCHEDULING =========================================
+=======================================================================================================
+
+00000000000000000000000000000000000000000 DATA STRUCTURES 000000000000000000000000000000000000000000000
+
+>> B1: structs that we change =>
+1- struct thread
+  {
+    /* Owned by thread.c. */
+    tid_t tid;                          /* Thread identifier. */
+    enum thread_status status;          /* Thread state. */
+    char name[16];                      /* Name (for debugging purposes). */
+    uint8_t *stack;                     /* Saved stack pointer. */
+    int priority;                       /* Priority. */
+    struct list_elem allelem;           /* List element for all threads list. */
+
+    /* Shared between thread.c and synch.c. */
+    struct list_elem elem;              /* List element. */
+
+	/*
+     * for solving multiple donation we need to keep track all locks that thread
+     * acquire to maintain the reverse of multiple donation operation
+     */
+	 struct list aquired_locks;      // list of locks that thread have aquired
+
+
+	 /*
+	  * to solve nested donation we should have a pointer to thread that we donate to
+	  * to make a chain of threads that will donate to thier pointer also
+	  */
+	 struct thread *donated_thread ; // thread that current thread donate to
+	 struct lock *donated_lock ; // lock that current thread donate to the lock holder
+
+	 int base_priority ; // to return to it's orignal priority right after finishing donating operation
+
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                  /* Page directory. */
+#endif
+
+    /* Owned by thread.c. */
+    unsigned magic;                     /* Detects stack overflow. */
+    int nice;                           /* Thread nice value. */
+    int32_t recent_cpu;                 /* recent cpu */
+
+  };
+
+2- struct lock
+  {
+    struct thread *holder;      /* Thread holding lock (for debugging). */
+    struct semaphore semaphore; /* Binary semaphore controlling access. */
+
+    struct list_elem elem ;   /* List element. */
+    int priority ; /* thread holder priority */
+  };
+
+>> B2: we use with every thread a list that holds the acquired locks 
+>> when thread try to acquire lock there is 2 cases 
+>> first "success" => then adds that locks to his list 
+>> second "fail" => then if the lock holder priority less that it's priority
+>> that thread will donate to holder and update lock->priority with it's priority
+>> when thread release lock it delete that lock from it's list and get maximum 
+>> lock hold max donation priority 
+
+>> L is running (aquiring Lock a and Lock b) with priority : L
+>> M interrupts with priority: M and needs lock a
+>> M donates to L with priority M, to avoid deadlock
+
+>> L priority: M
+>> L donated list: M
+
+>> H interrupts with priority: H and needs lock b
+>> H donates to thread L priority from M to H, to avoid deadlock
+
+>> L priority: H
+>> L donated list: M, H
+
+>> When L relase a lock, it searches its donating list for highest priority 
+>> donating thread to run, if its lock is released
+
+>> If Lock b and Lock a are released
+>> L priority: L
+>> H priority: H
+>> M priority: M
+
+>> running thread: H
+
+>> a PNG for this procedure is in indicated the following link: https://goo.gl/x5OVKI
+
+
+00000000000000000000000000000000000000000 ALGORITHMS 00000000000000000000000000000000000000000
+
+>> B3: before pop up a waiter we sort waiter list with priority 
+>> so we can ensure that highest waiter will wake up first 
+
+
+>> B4:Describe the sequence of events when a call to lock_acquire()causes a priority donation ?
+>> thread (L) acquire lock (A) and then thread (H) try to acquire 
+>> lock (A) but can't so it donate it's priority to thread (L) to be (H)
+
+>> How is nested donation handled?
+>> when thread donate it's priority to another smaller priority thread 
+>> it assign a pointer to it and it's lock 
+>> and that thread should donate the new priority to it's pointer and so on 
+>> while that pointer is not equal to NULL 
+>> we that approach we ensure that every thread that waiting to a lock 
+>> have that priority with the nested approach .
+ 
+		   
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+>> When lock_release() is called, then we delete that locks from thread's lock_acquired list 
+>> thread lock_acquired list is searched for the highest donated priority.
+>> and then assign it to it's priority 
+>> then we call sema_up() that's implicity wake up the highest waiter thread 
+
+00000000000000000000000000000000000000000 SYNCHRONIZATION 00000000000000000000000000000000000000000
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+>> A potential race can exist when a donation takes place and set_priority() is called.
+>> Race can happen because both functions can access the variable priority in "struct thread"
+>> and we disable interrupts before accessing priority variable and enable after process finish 
+
+00000000000000000000000000000000000000000000 RATIONALE 00000000000000000000000000000000000000000000
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+>> Instead of using extra data structure like: queue i.e. This design makes good use of implemented
+>> data structure provided by pintOS and its associated functions like: List which was of great use
+>> and had many useful functions that made us do dispense with other unimplemented data structure.
+
+>> This design softly and efficiently fits all cases with no complex logic
+
+>> In sema_up() and cond_signal() we used insert_ordered procedure which will keep the list sorted
+>> even after we pop elements from it. It is better than using sorting in every list_pop 
+>> which well make higher overhead at least of order O(n) at each pop
+
+>> Instead of using a list of threads associated with every lock 
+>> (more complex and bigger in size), we used the single variable indicating 
+>> which thread is holding the lock and one pointer in struct thread pointing
+>> to point to the thread it is donating to.
+
+>> Instead of using 64 priority_queue which will demand more space and higher overhead in poping each element
+>> as in some cases we will have to loop over those queues to get the highest priority element.
+
+=========================================================================================================
+========================================== ADVANCED SCHEDULER ===========================================
+=========================================================================================================
+
+0000000000000000000000000000000000000000000 DATA STRUCTURES 000000000000000000000000000000000000000000000
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+static struct priority_queue* mlf_p_queue;     /* This priority queue defined in thread.c, is used in place of the 64 queues.
+                                                  Threads are pushed in this queue and poped with the maximum priority first */
+                                                  
+static int32_t load_avg;        /* Holds the value of the load average of the system */
+
+A fixed_point.h and .c files are provided for implementation of the Fixed Point datatype.
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+timer  recent_cpu    priority   thread
+ticks   A   B   C   A   B   C   to run
+-----  --  --  --  --  --  --   ------
+ 0     0   0   0   63  61  59      A
+ 4     4   0   0   62  61  59      A
+ 8     8   0   0   61  61  59      B
+12     8   4   0   61  60  59      A
+16     12  4   0   60  60  59      B
+20     12  8   0   60  59  59      A
+24     16  8   0   59  59  59      C
+28     16  8   4   59  59  58      B
+32     16  12  4   59  58  58      A
+36     20  12  4   58  58  58      C
+
+-------------------------------------------------------------------------------------------------------
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+	Yes. firstly, in Pintos, you must provide the desired priority along with the other required attributes to create a thread,
+then priorities are updates each 4 ticks, but in the question, these priorities are not provided so I assumed that I ahould
+calculate them using the update equation as if tick zero is one of the updating ticks.This does not match the behavior of the 
+scheduler.
+	Secondly, recent cpu and load average are not updated according to the provided equarions. Because number of ticks does not
+exceed one second.
+
+---------------------------------------------------------------------------------------------------------
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+Most of the scheduling time is spent in the interrupt context, but little work is done outside like pushing the current running
+thread to the priority queue. This saves some time but it is nothing compared to the total time of sheduling.
+
+000000000000000000000000000000000000000000 RATIONALE 000000000000000000000000000000000000000000
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+
+It is very efficient, threads that finish their time slice are pushed to a priority queue which restores ordering in O(logn).
+Thread to be scheduled is chosen in log(n) which is very efficient compared to the soution where an array of 64 queues is
+used and each time you have to check them starting from the highest priority to find if a hread is threre, pick it. It 
+saves memory and time.
+Another point that is worth mentiotning is that earch 4 clock ticks, and when priorities are updated, heap restores its
+ordering in Theta(n) which is actually less then 2n, butin case of the array of queues, about 2n operations- in the worst 
+case - are performed.
+
+--------------------------------------------------------------------------------------------------------
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+Actually, I 've thought about using the float datatype defined in the C language, but I had short time to give this
+a shot, it would be a risk to inplement it that way and find a problem later, because an 8086 processor truly has no
+support for floating point numbers, so I decided to be in the safe side and go on implementing the Fixed Point library files.
+
+I did not provide an encapsulated structure for the Fixed Point datatype, instead, I have provided separate functions 
+that manipulate this kind of numbers separately in the form of operations like addition, subtraction, negation, division, ...etc 
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+
